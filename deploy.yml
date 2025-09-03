@@ -1,0 +1,259 @@
+---
+- name: Preparar nodos para Kubernetes
+  hosts: masters:workers
+  become: true
+  vars:
+    # --- Configura estas variables ---
+    # Elige 'hostname' o 'ip' para el endpoint del plano de control
+    control_plane_endpoint_mode: 'hostname'
+    pod_cidr: "192.168.0.0/16"  
+  tasks:
+
+    - name: Deshabilitar swap
+      ansible.builtin.shell: swapoff -a
+
+    - name: Habilitar IP forwarding
+      ansible.builtin.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: yes
+
+    - name: Instalar dependencias necesarias
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: yes
+
+    - name: Crear directorio para keyring
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+
+
+    - name: Añadir la clave GPG de CRI-O (método apt-key)
+      ansible.builtin.apt_key:
+        url: https://pkgs.k8s.io/addons:/cri-o:/prerelease:/main/deb/Release.key
+        state: present
+    
+    - name: Añadir el repositorio de CRI-O
+      ansible.builtin.apt_repository:
+        repo: "deb https://pkgs.k8s.io/addons:/cri-o:/prerelease:/main/deb/ /"
+        state: present
+        filename: cri-o
+
+
+    - name: Actualizar el caché de apt
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Instalar CRI-O y CRI-O-CNI
+      ansible.builtin.apt:
+        name:
+          - cri-o
+          - cri-tools
+        state: present
+
+
+    - name: Configurar cgroup_manager a systemd
+      ansible.builtin.lineinfile:
+        path: /etc/crio/crio.conf.d/10-crio.conf
+        regexp: '^\s*cgroup_manager\s*='
+        line: 'cgroup_manager = "systemd"'
+        insertafter: '^# default_runtime = "crun"'
+
+    - name: Establecer la imagen de pausa para los pods
+      ansible.builtin.lineinfile:
+        path: /etc/crio/crio.conf.d/10-crio.conf
+        regexp: '^\s*pause_image\s*='
+        line: 'pause_image="registry.k8s.io/pause:3.10"'
+        insertafter: '^\[crio.image\]'
+
+
+    - name: Habilitar y arrancar el servicio de CRI-O
+      ansible.builtin.systemd:
+        name: crio
+        state: started
+        enabled: yes
+
+
+
+    - name: Configurar pause_image para CRI-O
+      ansible.builtin.lineinfile:
+        path: /etc/crio/crio.conf.d/10-crio.conf
+        regexp: '^#?pause_image'
+        line: 'pause_image="registry.k8s.io/pause:3.10"'
+        insertafter: '^\[crio.image\]'
+
+    - name: Recargar daemon systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Habilitar y arrancar CRI-O
+      ansible.builtin.systemd:
+        name: crio
+        enabled: yes
+        state: started
+
+    - name: Instalar kubelet, kubeadm y kubectl
+      ansible.builtin.apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: yes
+
+
+    - name: Evitar actualización automática de kube*
+      ansible.builtin.command: |
+        apt-mark hold kubelet kubeadm kubectl
+
+
+
+    - name: Obtener la interfaz de red más pequeña
+      ansible.builtin.shell: "ip -o link show | awk -F': ' '/ en/ {print $2}' | sort -V | head -n 1"
+      register: smallest_interface
+      changed_when: false
+
+    - name: Obtener la IP local de la interfaz
+      ansible.builtin.shell: "ip --json addr show {{ smallest_interface.stdout }} | jq -r '.[0].addr_info[] | select(.family == \"inet\") | .local'"
+      register: local_ip
+      changed_when: false
+
+    - name: Configurar KUBELET_EXTRA_ARGS
+      ansible.builtin.lineinfile:
+        path: /etc/default/kubelet
+        regexp: '^KUBELET_EXTRA_ARGS='
+        line: "KUBELET_EXTRA_ARGS=--node-ip={{ local_ip.stdout }}"
+        create: true
+        mode: '0644'        
+
+
+
+    - name: Determinar el endpoint del plano de control
+      ansible.builtin.set_fact:
+        control_plane_endpoint: "{{ ansible_nodename }}"
+      when: control_plane_endpoint_mode == 'hostname'
+
+    - name: Determinar la IP local para el endpoint del plano de control
+      ansible.builtin.set_fact:
+        control_plane_endpoint: "{{ ansible_default_ipv4.address }}"
+      when: control_plane_endpoint_mode == 'ip'
+
+    - name: Obtener el nombre del nodo para el --node-name
+      ansible.builtin.set_fact:
+        node_name: "{{ ansible_nodename }}"
+      
+    - name: Inicializar el clúster con kubeadm
+      ansible.builtin.command: |
+        kubeadm init \
+          --apiserver-cert-extra-sans={{ node_name }} \
+          --control-plane-endpoint={{ control_plane_endpoint }} \
+          --pod-network-cidr={{ pod_cidr }} \
+          --node-name={{ node_name }} \
+          --cri-socket unix:///var/run/crio/crio.sock \
+          --upload-certs
+      register: kubeadm_output
+
+    - name: Mostrar el output de kubeadm (para el comando join)
+      ansible.builtin.debug:
+        var: kubeadm_output.stdout_lines
+
+
+    - name: Obtener información del usuario 'oloco'
+      ansible.builtin.user:
+        name: oloco
+      register: oloco_info
+
+    - name: Crear el directorio .kube para 'oloco'
+      ansible.builtin.file:
+        path: "{{ oloco_info.home }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: oloco
+        group: oloco
+
+    - name: Copiar admin.conf al directorio .kube de 'oloco'
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ oloco_info.home }}/.kube/config"
+        owner: oloco
+        group: oloco
+        mode: '0600'
+        remote_src: yes
+
+    - name: Copiar la configuración de kube para el usuario root
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        owner: root
+        group: root
+        mode: '0600'
+        remote_src: yes
+
+
+
+
+
+    - name: Obtener la última versión de Calico
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/projectcalico/calico/releases/latest
+        return_content: yes
+      register: calico_release
+      changed_when: false
+
+    - name: Establecer la variable CALICO_VERSION
+      ansible.builtin.set_fact:
+        calico_version: "{{ calico_release.json.tag_name | regex_replace('v','') }}"
+
+
+    - name: Establecer la variable CALICO_VERSION
+      ansible.builtin.set_fact:
+        calico_version: "{{ calico_release.json.tag_name | regex_replace('v','') }}"
+
+    - name: Mostrar la versión de Calico
+      ansible.builtin.debug:
+        msg: "La versión de Calico es: {{ calico_version }}"
+
+
+
+
+
+    - name: Crear Calico Operator con kubectl
+      ansible.builtin.command: |
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/tigera-operator.yaml
+
+
+
+
+    - name: Esperar a que se instalen los CRDs
+      ansible.builtin.pause:
+        seconds: 15
+
+
+    - name: Descargar el archivo custom-resources.yaml
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/custom-resources.yaml"
+        dest: "/tmp/custom-resources.yaml"
+
+    # - name: Modificar el CIDR de la red de Pods en custom-resources.yaml
+    #   ansible.builtin.lineinfile:
+    #     path: /tmp/custom-resources.yaml
+    #     regexp: '^  cidr: .*'
+    #     line: "  cidr: {{ pod_cidr }}"
+
+    - name: Crear recursos personalizados de Calico
+      ansible.builtin.command: |
+        kubectl create -f /tmp/custom-resources.yaml
+
+    - name: Quitar el taints del nodo de control para usarlo como worker
+      ansible.builtin.command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+      when: not ansible_check_mode
