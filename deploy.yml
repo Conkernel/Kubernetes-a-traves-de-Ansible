@@ -37,11 +37,6 @@
         mode: '0755'
 
 
-
-    - name: Añadir la clave GPG de CRI-O (método apt-key)
-      ansible.builtin.apt_key:
-        url: https://pkgs.k8s.io/addons:/cri-o:/prerelease:/main/deb/Release.key
-        state: present
     
     - name: Añadir el repositorio de CRI-O
       ansible.builtin.apt_repository:
@@ -58,7 +53,6 @@
       ansible.builtin.apt:
         name:
           - cri-o
-          - cri-tools
         state: present
 
 
@@ -101,6 +95,50 @@
         name: crio
         enabled: yes
         state: started
+
+
+
+    - name: Obtener versión estable de Kubernetes
+      ansible.builtin.shell: "curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt"
+      register: kubernetes_version
+      changed_when: false
+
+    - name: Extraer versión corta (major.minor)
+      ansible.builtin.set_fact:
+        kubernetes_version_short: "{{ kubernetes_version.stdout.split('.')[0] }}.{{ kubernetes_version.stdout.split('.')[1] }}"
+
+    - name: Crear directorio para keyrings
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Descargar clave GPG de Kubernetes
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version_short }}/deb/Release.key"
+        dest: "/tmp/kubernetes-release.key"
+        mode: '0644'
+
+    - name: Convertir clave a keyring
+      ansible.builtin.command:
+        cmd: "gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key"
+      args:
+        creates: "/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+
+
+    - name: Añadir repositorio de Kubernetes
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version_short }}/deb/ /"
+        filename: "kubernetes"
+        state: present
+
+    - name: Actualizar cache de APT
+      ansible.builtin.apt:
+        update_cache: yes
+
+
+
+
 
     - name: Instalar kubelet, kubeadm y kubectl
       ansible.builtin.apt:
@@ -189,6 +227,16 @@
         group: oloco
         mode: '0600'
         remote_src: yes
+
+    - name: Crear el directorio .kube para 'root'
+      ansible.builtin.file:
+        path: "/root/.kube"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+
 
     - name: Copiar la configuración de kube para el usuario root
       ansible.builtin.copy:

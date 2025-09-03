@@ -1,9 +1,14 @@
 [masters]
-k8s3.casa.lan
-
-[k8s_workers]
-# añade aquí tus nodos workers si los tienes
+k8s.casa.lan
 
 [masters:vars]
 ansible_user=ansible
-ansible_ssh_private_key_file=~/.ssh/id_ansible
+ansible_ssh_pass=oloco
+ansible_become_pass=oloco
+ansible_python_interpreter=/usr/bin/python3
+
+[k8s_workers]
+# agrega aquí tus nodos workers
+
+[all:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
