@@ -6,11 +6,13 @@
     # --- Configura estas variables ---
     # Elige 'hostname' o 'ip' para el endpoint del plano de control
     control_plane_endpoint_mode: 'hostname'
-    pod_cidr: "192.168.0.0/16"  
+    pod_cidr: "192.168.0.0/16"
+
   tasks:
 
     - name: Deshabilitar swap
       ansible.builtin.shell: swapoff -a
+
 
     - name: Habilitar IP forwarding
       ansible.builtin.sysctl:
@@ -19,7 +21,7 @@
         state: present
         reload: yes
 
-    - name: Instalar dependencias necesarias
+    - name: Instalar dependencias necesarias (incluye gnupg y jq)
       ansible.builtin.apt:
         name:
           - apt-transport-https
@@ -27,49 +29,72 @@
           - curl
           - gnupg
           - lsb-release
+          - jq
         state: present
         update_cache: yes
 
-    - name: Crear directorio para keyring
+    - name: Crear directorio para keyrings
       ansible.builtin.file:
         path: /etc/apt/keyrings
         state: directory
         mode: '0755'
 
+    # ---- CRI-O key + repo ----
+    - name: Descargar clave GPG de CRI-O a /tmp
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/addons:/cri-o:/prerelease:/main/deb/Release.key"
+        dest: "/tmp/cri-o-Release.key"
+        mode: '0644'
+        force: yes
 
-    
-    - name: Añadir el repositorio de CRI-O
+    - name: Convertir clave CRI-O a keyring binario
+      ansible.builtin.command: >
+        gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg /tmp/cri-o-Release.key
+      args:
+        creates: /etc/apt/keyrings/cri-o-apt-keyring.gpg
+
+    - name: Ajustar permisos del keyring CRI-O
+      ansible.builtin.file:
+        path: /etc/apt/keyrings/cri-o-apt-keyring.gpg
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Añadir el repositorio CRI-O usando signed-by
       ansible.builtin.apt_repository:
-        repo: "deb https://pkgs.k8s.io/addons:/cri-o:/prerelease:/main/deb/ /"
-        state: present
+        repo: "deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.gpg] https://pkgs.k8s.io/addons:/cri-o:/prerelease:/main/deb/ /"
         filename: cri-o
+        state: present
 
-
-    - name: Actualizar el caché de apt
+    - name: Actualizar el caché de apt (después de añadir CRI-O)
       ansible.builtin.apt:
         update_cache: yes
 
-    - name: Instalar CRI-O y CRI-O-CNI
+    - name: Instalar CRI-O
       ansible.builtin.apt:
         name:
           - cri-o
         state: present
 
-
-    - name: Configurar cgroup_manager a systemd
+    - name: Configurar cgroup_manager a systemd en CRI-O
       ansible.builtin.lineinfile:
         path: /etc/crio/crio.conf.d/10-crio.conf
         regexp: '^\s*cgroup_manager\s*='
         line: 'cgroup_manager = "systemd"'
-        insertafter: '^# default_runtime = "crun"'
+        create: yes
+        insertafter: EOF
 
-    - name: Establecer la imagen de pausa para los pods
+    - name: Establecer la imagen de pausa para CRI-O
       ansible.builtin.lineinfile:
         path: /etc/crio/crio.conf.d/10-crio.conf
         regexp: '^\s*pause_image\s*='
         line: 'pause_image="registry.k8s.io/pause:3.10"'
-        insertafter: '^\[crio.image\]'
+        create: yes
+        insertafter: EOF
 
+    - name: Recargar daemon systemd y asegurar crio activo
+      ansible.builtin.systemd:
+        daemon_reload: yes
 
     - name: Habilitar y arrancar el servicio de CRI-O
       ansible.builtin.systemd:
@@ -77,27 +102,7 @@
         state: started
         enabled: yes
 
-
-
-    - name: Configurar pause_image para CRI-O
-      ansible.builtin.lineinfile:
-        path: /etc/crio/crio.conf.d/10-crio.conf
-        regexp: '^#?pause_image'
-        line: 'pause_image="registry.k8s.io/pause:3.10"'
-        insertafter: '^\[crio.image\]'
-
-    - name: Recargar daemon systemd
-      ansible.builtin.systemd:
-        daemon_reload: yes
-
-    - name: Habilitar y arrancar CRI-O
-      ansible.builtin.systemd:
-        name: crio
-        enabled: yes
-        state: started
-
-
-
+    # ---- Kubernetes key + repo ----
     - name: Obtener versión estable de Kubernetes
       ansible.builtin.shell: "curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt"
       register: kubernetes_version
@@ -107,38 +112,28 @@
       ansible.builtin.set_fact:
         kubernetes_version_short: "{{ kubernetes_version.stdout.split('.')[0] }}.{{ kubernetes_version.stdout.split('.')[1] }}"
 
-    - name: Crear directorio para keyrings
-      ansible.builtin.file:
-        path: /etc/apt/keyrings
-        state: directory
-        mode: '0755'
-
-    - name: Descargar clave GPG de Kubernetes
+    - name: Descargar clave GPG de Kubernetes a /tmp
       ansible.builtin.get_url:
         url: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version_short }}/deb/Release.key"
         dest: "/tmp/kubernetes-release.key"
         mode: '0644'
+        force: yes
 
-    - name: Convertir clave a keyring
+    - name: Convertir clave Kubernetes a keyring binario
       ansible.builtin.command:
         cmd: "gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key"
       args:
         creates: "/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
 
-
-    - name: Añadir repositorio de Kubernetes
+    - name: Añadir repositorio de Kubernetes (signed-by)
       ansible.builtin.apt_repository:
         repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version_short }}/deb/ /"
         filename: "kubernetes"
         state: present
 
-    - name: Actualizar cache de APT
+    - name: Actualizar cache de APT (después de añadir Kubernetes)
       ansible.builtin.apt:
         update_cache: yes
-
-
-
-
 
     - name: Instalar kubelet, kubeadm y kubectl
       ansible.builtin.apt:
@@ -147,36 +142,32 @@
           - kubeadm
           - kubectl
         state: present
-        update_cache: yes
-
+        update_cache: no
 
     - name: Evitar actualización automática de kube*
-      ansible.builtin.command: |
-        apt-mark hold kubelet kubeadm kubectl
+      ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
 
-
-
+    # ---- Kubelet network / node-ip ----
     - name: Obtener la interfaz de red más pequeña
       ansible.builtin.shell: "ip -o link show | awk -F': ' '/ en/ {print $2}' | sort -V | head -n 1"
       register: smallest_interface
       changed_when: false
 
     - name: Obtener la IP local de la interfaz
-      ansible.builtin.shell: "ip --json addr show {{ smallest_interface.stdout }} | jq -r '.[0].addr_info[] | select(.family == \"inet\") | .local'"
+      ansible.builtin.shell: "ip --json addr show {{ smallest_interface.stdout }} | jq -r '.[0].addr_info[] | select(.family == \"inet\") | .local' || true"
       register: local_ip
       changed_when: false
 
-    - name: Configurar KUBELET_EXTRA_ARGS
+    - name: Configurar KUBELET_EXTRA_ARGS si tenemos IP local
       ansible.builtin.lineinfile:
         path: /etc/default/kubelet
         regexp: '^KUBELET_EXTRA_ARGS='
-        line: "KUBELET_EXTRA_ARGS=--node-ip={{ local_ip.stdout }}"
+        line: "KUBELET_EXTRA_ARGS=--node-ip={{ local_ip.stdout | default('') }}"
         create: true
-        mode: '0644'        
+        mode: '0644'
 
-
-
-    - name: Determinar el endpoint del plano de control
+    # ---- Control plane / init ----
+    - name: Determinar el endpoint del plano de control (hostname)
       ansible.builtin.set_fact:
         control_plane_endpoint: "{{ ansible_nodename }}"
       when: control_plane_endpoint_mode == 'hostname'
@@ -189,23 +180,25 @@
     - name: Obtener el nombre del nodo para el --node-name
       ansible.builtin.set_fact:
         node_name: "{{ ansible_nodename }}"
-      
+
     - name: Inicializar el clúster con kubeadm
-      ansible.builtin.command: |
-        kubeadm init \
-          --apiserver-cert-extra-sans={{ node_name }} \
-          --control-plane-endpoint={{ control_plane_endpoint }} \
-          --pod-network-cidr={{ pod_cidr }} \
-          --node-name={{ node_name }} \
-          --cri-socket unix:///var/run/crio/crio.sock \
+      ansible.builtin.command: >
+        kubeadm init
+          --apiserver-cert-extra-sans={{ node_name }}
+          --control-plane-endpoint={{ control_plane_endpoint }}
+          --pod-network-cidr={{ pod_cidr }}
+          --node-name={{ node_name }}
+          --cri-socket unix:///var/run/crio/crio.sock
           --upload-certs
       register: kubeadm_output
+      args:
+        creates: /etc/kubernetes/admin.conf
 
     - name: Mostrar el output de kubeadm (para el comando join)
       ansible.builtin.debug:
         var: kubeadm_output.stdout_lines
 
-
+    # ---- Copiar admin.conf a usuarios ----
     - name: Obtener información del usuario 'oloco'
       ansible.builtin.user:
         name: oloco
@@ -236,8 +229,6 @@
         owner: root
         group: root
 
-
-
     - name: Copiar la configuración de kube para el usuario root
       ansible.builtin.copy:
         src: /etc/kubernetes/admin.conf
@@ -247,10 +238,7 @@
         mode: '0600'
         remote_src: yes
 
-
-
-
-
+    # ---- Calico (instalación básica vía manifests) ----
     - name: Obtener la última versión de Calico
       ansible.builtin.uri:
         url: https://api.github.com/repos/projectcalico/calico/releases/latest
@@ -262,46 +250,34 @@
       ansible.builtin.set_fact:
         calico_version: "{{ calico_release.json.tag_name | regex_replace('v','') }}"
 
-
-    - name: Establecer la variable CALICO_VERSION
-      ansible.builtin.set_fact:
-        calico_version: "{{ calico_release.json.tag_name | regex_replace('v','') }}"
-
     - name: Mostrar la versión de Calico
       ansible.builtin.debug:
         msg: "La versión de Calico es: {{ calico_version }}"
 
-
-
-
-
     - name: Crear Calico Operator con kubectl
-      ansible.builtin.command: |
+      ansible.builtin.command: >
         kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/tigera-operator.yaml
-
-
-
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
 
     - name: Esperar a que se instalen los CRDs
       ansible.builtin.pause:
         seconds: 15
 
-
-    - name: Descargar el archivo custom-resources.yaml
+    - name: Descargar el archivo custom-resources.yaml de Calico
       ansible.builtin.get_url:
         url: "https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/custom-resources.yaml"
         dest: "/tmp/custom-resources.yaml"
 
-    # - name: Modificar el CIDR de la red de Pods en custom-resources.yaml
-    #   ansible.builtin.lineinfile:
-    #     path: /tmp/custom-resources.yaml
-    #     regexp: '^  cidr: .*'
-    #     line: "  cidr: {{ pod_cidr }}"
-
     - name: Crear recursos personalizados de Calico
-      ansible.builtin.command: |
+      ansible.builtin.command: >
         kubectl create -f /tmp/custom-resources.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
 
-    - name: Quitar el taints del nodo de control para usarlo como worker
-      ansible.builtin.command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+    - name: Quitar el taint del nodo de control para usarlo como worker (si procede)
+      ansible.builtin.command: >
+        kubectl taint nodes --all node-role.kubernetes.io/control-plane-
       when: not ansible_check_mode
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
