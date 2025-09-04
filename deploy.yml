@@ -281,3 +281,146 @@
       when: not ansible_check_mode
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
+
+
+
+
+
+    # Asume become: true en el play
+    - name: Asegurar directorio para bash completions
+      ansible.builtin.file:
+        path: /etc/bash_completion.d
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Comprobar si kubectl está disponible
+      ansible.builtin.command: which kubectl
+      register: kubectl_which
+      failed_when: false
+      changed_when: false
+
+    - name: Generar fichero de completion para kubectl (si kubectl existe)
+      ansible.builtin.command: kubectl completion bash
+      register: kubectl_completion
+      when: kubectl_which.rc == 0
+      changed_when: false
+
+    - name: Escribir /etc/bash_completion.d/kubectl (idempotente)
+      ansible.builtin.copy:
+        content: "{{ kubectl_completion.stdout }}"
+        dest: /etc/bash_completion.d/kubectl
+        owner: root
+        group: root
+        mode: '0644'
+      when: kubectl_which.rc == 0
+
+    - name: Comprobar si kubeadm está disponible
+      ansible.builtin.command: which kubeadm
+      register: kubeadm_which
+      failed_when: false
+      changed_when: false
+
+    - name: Generar fichero de completion para kubeadm (si kubeadm existe)
+      ansible.builtin.command: kubeadm completion bash
+      register: kubeadm_completion
+      when: kubeadm_which.rc == 0
+      changed_when: false
+
+    - name: Escribir /etc/bash_completion.d/kubeadm (idempotente)
+      ansible.builtin.copy:
+        content: "{{ kubeadm_completion.stdout }}"
+        dest: /etc/bash_completion.d/kubeadm
+        owner: root
+        group: root
+        mode: '0644'
+      when: kubeadm_which.rc == 0
+
+    # ---- /etc/bash.bashrc block ----
+    - name: Añadir bloque de configuración al /etc/bash.bashrc
+      ansible.builtin.blockinfile:
+        path: /etc/bash.bashrc
+        create: yes
+        marker: "# {mark} ANSIBLE K8S CONFIG"
+        block: |
+          PS1='\[\e[1;32m\]\u@\h:\[\e[1;34m\]\w\[\e[0m\]\$ '
+
+          if [ -f /etc/bash_aliases ]; then
+              . /etc/bash_aliases
+          fi
+
+          export GCC_COLORS='error=01;31:warning=01;35:note=01;36:caret=01;32:locus=01;34:quote=01'
+          # Colores para las páginas de manual
+          export LESS_TERMCAP_mb=$'\e[1;31m'     # Comienzo de negrita
+          export LESS_TERMCAP_md=$'\e[1;31m'     # Comienzo de negrita
+          export LESS_TERMCAP_me=$'\e[0m'        # Fin de negrita
+          export LESS_TERMCAP_se=$'\e[0m'        # Fin de standout-mode
+          export LESS_TERMCAP_so=$'\e[1;44;33m'  # Comienzo de standout-mode
+          export LESS_TERMCAP_ue=$'\e[0m'        # Fin de subrayado
+          export LESS_TERMCAP_us=$'\e[1;32m'     # Comienzo de subrayado
+
+          if [ -x /usr/bin/dircolors ]; then
+              test -r ~/.dircolors && eval "\$(dircolors -b ~/.dircolors)" || eval "\$(dircolors -b)"
+              alias ls='ls --color=auto'
+              alias dir='dir --color=auto'
+              alias vdir='vdir --color=auto'
+              alias grep='grep --color=auto'
+              alias fgrep='fgrep --color=auto'
+              alias egrep='egrep --color=auto'
+              alias less='less -R'
+          fi
+
+          # alias corto para kubectl (kk) y su completion
+          complete -o default -F __start_kubectl kk
+
+          # Sourcing completions - evita fallos si no existen
+          if [ -f /etc/bash_completion.d/kubectl ]; then
+            source /etc/bash_completion.d/kubectl
+          fi
+
+          if [ -f /etc/bash_completion.d/kubeadm ]; then
+            source /etc/bash_completion.d/kubeadm
+          fi
+
+          if [ -f /usr/share/bash-completion/bash_completion ]; then
+            source /usr/share/bash-completion/bash_completion
+          fi
+
+    - name: Asegurar /etc/bash_aliases con alias útiles
+      ansible.builtin.blockinfile:
+        path: /etc/bash_aliases
+        create: yes
+        marker: "# {mark} ANSIBLE K8S ALIASES"
+        block: |
+          alias cc='clear'
+          alias ll='ls -lahF'
+          alias kk='kubectl'
+
+    # Añadir en el .bashrc del usuario 'oloco' y root la fuente a /etc/bash.bashrc si no existe
+    - name: Añadir source de /etc/bash.bashrc al .bashrc de oloco (si existe su home)
+      ansible.builtin.blockinfile:
+        path: /home/oloco/.bashrc
+        create: yes
+        owner: oloco
+        group: oloco
+        mode: '0644'
+        marker: "# {mark} ANSIBLE USER BASH CONFIG"
+        block: |
+          if [ -f /etc/bash.bashrc ]; then
+              . /etc/bash.bashrc
+          fi
+      when: ansible_facts['env']['HOME'] is not defined or true  # no falla si home no está, uso condicional para ejecutar en la mayoría de setups
+
+    - name: Añadir source de /etc/bash.bashrc al .bashrc de root
+      ansible.builtin.blockinfile:
+        path: /root/.bashrc
+        create: yes
+        owner: root
+        group: root
+        mode: '0644'
+        marker: "# {mark} ANSIBLE ROOT BASH CONFIG"
+        block: |
+          if [ -f /etc/bash.bashrc ]; then
+              . /etc/bash.bashrc
+          fi
