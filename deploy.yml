@@ -120,25 +120,58 @@
         state: started
         enabled: yes
 
-    - name: Obtener versión estable de Kubernetes
-      ansible.builtin.shell: "curl -L -s https://dl.k8s.io/release/stable.txt"
-      register: kubernetes_version
-      changed_when: false
 
+    # ### Ütima version automática ###
+
+
+    # - name: Obtener versión estable de Kubernetes
+    #   ansible.builtin.shell: "curl -L -s https://dl.k8s.io/release/stable.txt"
+    #   register: kubernetes_version
+    #   changed_when: false
+
+
+    # - name: Mostrar version de kubernetes
+    #   ansible.builtin.debug:
+    #     var: kubernetes_version
+
+
+    # - name: Extraer versión corta (major.minor)
+    #   ansible.builtin.set_fact:
+    #     kubernetes_version_short: "{{ kubernetes_version.stdout.split('.')[0] }}.{{ kubernetes_version.stdout.split('.')[1] }}"
+
+
+    # - name: Mostrar version corta
+    #   ansible.builtin.debug:
+    #     var: kubernetes_version_short
+
+    # ##################################
+
+
+    ##################################
+
+    ### Version manual ###
+
+    - name: Definir variable de versión de Kubernetes manualmente (para así poder actualizarlo y practicar)
+      set_fact:
+        kubernetes_version: "v1.32.0"
 
     - name: Mostrar version de kubernetes
       ansible.builtin.debug:
         var: kubernetes_version
 
-
     - name: Extraer versión corta (major.minor)
       ansible.builtin.set_fact:
-        kubernetes_version_short: "{{ kubernetes_version.stdout.split('.')[0] }}.{{ kubernetes_version.stdout.split('.')[1] }}"
+        kubernetes_version_short: "v1.32"
 
 
     - name: Mostrar version corta
       ansible.builtin.debug:
         var: kubernetes_version_short
+
+
+##################################
+
+
 
 
     - name: Descargar clave GPG de Kubernetes a /tmp
