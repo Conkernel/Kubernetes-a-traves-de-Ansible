@@ -102,15 +102,26 @@
         state: started
         enabled: yes
 
-    # ---- Kubernetes key + repo ----
     - name: Obtener versión estable de Kubernetes
-      ansible.builtin.shell: "curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt"
+      ansible.builtin.shell: "curl -L -s https://dl.k8s.io/release/stable.txt"
       register: kubernetes_version
       changed_when: false
+
+
+    - name: Mostrar version de kubernetes
+      ansible.builtin.debug:
+        var: kubernetes_version
+
 
     - name: Extraer versión corta (major.minor)
       ansible.builtin.set_fact:
         kubernetes_version_short: "{{ kubernetes_version.stdout.split('.')[0] }}.{{ kubernetes_version.stdout.split('.')[1] }}"
+
+
+    - name: Mostrar version corta
+      ansible.builtin.debug:
+        var: kubernetes_version_short
+
 
     - name: Descargar clave GPG de Kubernetes a /tmp
       ansible.builtin.get_url:
