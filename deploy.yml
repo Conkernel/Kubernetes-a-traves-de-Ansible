@@ -10,6 +10,24 @@
 
   tasks:
 
+    - name: Asegurar directorio /etc/sudoers.d
+      ansible.builtin.file:
+        path: /etc/sudoers.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Añadir entrada NOPASSWD para el usuario oloco (validado con visudo)
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/nopasswd
+        content: "oloco ALL=(ALL) NOPASSWD: ALL\n"
+        owner: root
+        group: root
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+
+
     - name: Deshabilitar swap
       ansible.builtin.shell: swapoff -a
 
