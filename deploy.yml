@@ -31,7 +31,9 @@
     - name: Deshabilitar swap
       ansible.builtin.shell: swapoff -a
 
-
+    - name: Cambiar el hostname del sistema a k8s.casa.lan
+      ansible.builtin.hostname:
+        name: k8s.casa.lan
 
     - name: Sobrescribir el archivo /etc/hosts con una configuración específica
       ansible.builtin.copy:
