@@ -32,6 +32,26 @@
       ansible.builtin.shell: swapoff -a
 
 
+
+    - name: Sobrescribir el archivo /etc/hosts con una configuración específica
+      ansible.builtin.copy:
+        content: |
+          127.0.0.1       localhost
+          127.0.1.1       k8s.casa.lan k8s
+
+          # The following lines are desirable for IPv6 capable hosts
+          ::1             localhost ip6-localhost ip6-loopback
+          ff02::1         ip6-allnodes
+          ff02::2         ip6-allrouters
+        dest: /etc/hosts
+        owner: root
+        group: root
+        mode: '0644'
+
+
+
+
+
     - name: Habilitar IP forwarding
       ansible.builtin.sysctl:
         name: net.ipv4.ip_forward
@@ -321,6 +341,15 @@
         kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/tigera-operator.yaml
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
+
+
+    - name: Crear Calico Operator con kubectl
+      ansible.builtin.command: >
+        kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/operator-crds.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+
 
     - name: Esperar a que se instalen los CRDs
       ansible.builtin.pause:
