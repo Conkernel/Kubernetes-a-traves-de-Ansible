@@ -51,9 +51,6 @@
         mode: '0644'
 
 
-
-
-
     - name: Habilitar IP forwarding
       ansible.builtin.sysctl:
         name: net.ipv4.ip_forward
@@ -175,7 +172,7 @@
 
     - name: Definir variable de versión de Kubernetes manualmente (para así poder actualizarlo y practicar)
       set_fact:
-        kubernetes_version: "v1.32.0"
+        kubernetes_version: "v1.34.1"
 
     - name: Mostrar version de kubernetes
       ansible.builtin.debug:
@@ -183,7 +180,7 @@
 
     - name: Extraer versión corta (major.minor)
       ansible.builtin.set_fact:
-        kubernetes_version_short: "v1.32"
+        kubernetes_version_short: "v1.34"
 
 
     - name: Mostrar version corta
@@ -488,6 +485,7 @@
           alias cc='clear'
           alias ll='ls -lahF'
           alias kk='kubectl'
+          alias k='kubectl'          
 
     # Añadir en el .bashrc del usuario 'oloco' y root la fuente a /etc/bash.bashrc si no existe
     - name: Añadir source de /etc/bash.bashrc al .bashrc de oloco (si existe su home)
